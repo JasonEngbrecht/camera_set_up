@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Raspberry Pi Global Shutter Camera Viewer and Frame Capture
+Raspberry Pi Global Shutter Camera Viewer and Frame Capture using Picamera2
 
 This program opens a video stream from the Raspberry Pi Global Shutter Camera,
 displays it in a window, and allows the user to:
@@ -10,137 +10,198 @@ displays it in a window, and allows the user to:
 Captured frames are saved in the 'frames' folder with timestamped filenames.
 """
 
-import cv2
-import time
+import sys
 import os
+import time
 import subprocess
+import cv2
+import numpy as np
 from datetime import datetime
 
-def get_camera_details():
-    """Get camera details using v4l2-ctl command line tool."""
+def check_dependencies():
+    """Check if the required dependencies are installed."""
+    print("\n----- CHECKING DEPENDENCIES -----")
+    
+    # Check if picamera2 is installed in system packages
     try:
-        result = subprocess.run(['v4l2-ctl', '--list-formats-ext'], 
-                               stdout=subprocess.PIPE, 
-                               text=True)
-        print("Available camera formats:")
-        print(result.stdout)
+        result = subprocess.run(["apt", "list", "--installed", "python3-picamera2"], 
+                               capture_output=True, text=True, check=False)
+        if "python3-picamera2" in result.stdout and "installed" in result.stdout:
+            print("✓ python3-picamera2 is installed via apt")
+        else:
+            print("✗ python3-picamera2 is NOT installed via system packages")
+            print("  Try: sudo apt install python3-picamera2")
     except Exception as e:
-        print(f"Could not get camera details: {e}")
+        print(f"? Error checking apt packages: {e}")
+    
+    # Check for libcamera
+    try:
+        result = subprocess.run(["apt", "list", "--installed", "libcamera*"], 
+                               capture_output=True, text=True, check=False)
+        if "libcamera" in result.stdout and "installed" in result.stdout:
+            print("✓ libcamera packages are installed")
+        else:
+            print("✗ libcamera packages might be missing")
+            print("  Try: sudo apt install libcamera-apps")
+    except Exception as e:
+        print(f"? Error checking libcamera: {e}")
+    
+    # Check camera tools
+    try:
+        result = subprocess.run(["which", "libcamera-hello"], 
+                               capture_output=True, text=True, check=False)
+        if result.returncode == 0:
+            print("✓ libcamera tools are installed")
+        else:
+            print("✗ libcamera-hello command not found")
+            print("  Try: sudo apt install libcamera-apps")
+    except Exception as e:
+        print(f"? Error checking camera tools: {e}")
+    
+    print("---------------------------------")
+    print("\n----- TROUBLESHOOTING SUGGESTIONS -----")
+    print("1. Install picamera2 with system packages (preferred method):")
+    print("   sudo apt update")
+    print("   sudo apt install -y python3-picamera2 libcamera-apps")
+    print("\n2. Make sure the camera is enabled:")
+    print("   sudo raspi-config")
+    print("   (Navigate to Interface Options > Camera > Enable)")
+    print("\n3. Check if camera is detected:")
+    print("   vcgencmd get_camera")
+    print("   (Should show 'supported=1 detected=1')")
+    print("\n4. Test camera with system tools:")
+    print("   libcamera-hello --list-cameras")
+    print("   libcamera-jpeg -o test.jpg")
+    print("\n5. Ensure your user is in the 'video' group:")
+    print("   sudo usermod -aG video $USER")
+    print("   (Log out and back in for this to take effect)")
+    print("-----------------------------------------")
 
 def main():
+    # Check dependencies
+    check_dependencies()
+    
     # Create the frames directory if it doesn't exist
     frames_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frames")
     os.makedirs(frames_dir, exist_ok=True)
     
-    # Print camera details to help with debugging
-    get_camera_details()
-    
-    # Initialize the camera using OpenCV's VideoCapture
-    print("Initializing camera...")
-    cap = cv2.VideoCapture(0)
-    
-    # Check if the camera opened successfully
-    if not cap.isOpened():
-        print("Error: Could not open camera.")
+    # Import picamera2 here to handle import errors more gracefully
+    try:
+        from picamera2 import Picamera2
+        print("\n✓ Successfully imported picamera2")
+    except ImportError as e:
+        print(f"\n✗ Failed to import picamera2: {e}")
+        print("\nTo install picamera2 correctly, follow these steps:")
+        print("1. Exit any virtual environments")
+        print("2. Run: sudo apt install python3-picamera2")
+        print("3. Use the system Python instead of a virtual environment")
+        print("   or install picamera2 in your virtual environment with:")
+        print("   pip install picamera2")
+        return
+    except Exception as e:
+        print(f"\n✗ Unexpected error importing picamera2: {e}")
         return
     
-    # Start with default settings first to make sure we can get frames
-    print("Getting initial camera properties...")
-    initial_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-    initial_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    print(f"Initial camera resolution: {initial_width}x{initial_height}")
-    
-    # Try setting the camera properties (but don't assume it will work)
-    print("Attempting to set camera to optimal resolution...")
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1456)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1088)
-    
-    # Check what resolution we actually got
-    actual_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-    actual_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    print(f"Camera configured at resolution: {actual_width} x {actual_height}")
-    
-    # Get a test frame to make sure it's working
-    print("Testing frame capture...")
-    ret, test_frame = cap.read()
-    if not ret or test_frame is None:
-        print("WARNING: Failed to capture initial test frame!")
-        print("Trying with default camera settings...")
+    # Initialize camera
+    print("\nInitializing Picamera2...")
+    try:
+        picam2 = Picamera2()
         
-        # Release the first capture attempt
-        cap.release()
-        
-        # Try again with default settings
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            print("Error: Could not open camera on second attempt.")
+        # List available cameras
+        cameras = picam2.global_camera_info()
+        if cameras:
+            print(f"Available cameras: {len(cameras)}")
+            for i, camera in enumerate(cameras):
+                print(f"Camera {i}: {camera.get('Model', 'Unknown')} ({camera.get('Location', 'Unknown location')})")
+        else:
+            print("No cameras detected by Picamera2")
             return
-            
-        # Check if we can get a frame now
-        ret, test_frame = cap.read()
-        if not ret or test_frame is None:
-            print("Error: Still cannot capture frames. Please check camera connection.")
+        
+        # Set up camera configuration
+        print("Setting up camera configuration...")
+        
+        # For Global Shutter Camera, use full resolution (1456x1088)
+        # but fall back to default if that fails
+        try:
+            # Try to set the full resolution for the Global Shutter Camera
+            config = picam2.create_preview_configuration(
+                main={"size": (1456, 1088), "format": "RGB888"}
+            )
+            picam2.configure(config)
+            print("Using full resolution: 1456x1088")
+        except Exception as e:
+            print(f"Error setting full resolution: {e}")
+            print("Falling back to default configuration...")
+            config = picam2.create_preview_configuration()
+            picam2.configure(config)
+        
+        # Start the camera
+        print("Starting camera...")
+        picam2.start()
+        
+        # Get camera info after starting
+        sensor_resolution = picam2.camera_properties.get('PixelArraySize', (0, 0))
+        print(f"Sensor resolution: {sensor_resolution[0]}x{sensor_resolution[1]}")
+        
+        # Get frame dimensions
+        test_frame = picam2.capture_array()
+        if test_frame is not None:
+            print(f"Captured frame size: {test_frame.shape[1]}x{test_frame.shape[0]}x{test_frame.shape[2]}")
+        else:
+            print("Failed to capture initial test frame")
+            picam2.close()
             return
-    
-    # Get actual frame dimensions after successful capture
-    if test_frame is not None:
-        height, width = test_frame.shape[:2]
-        print(f"Successfully captured test frame with dimensions: {width}x{height}")
-    
-    print("Camera initialized successfully")
-    print("Displaying video stream. Press SPACEBAR to capture a frame, 'q' to quit.")
-    
-    frame_count = 0
-    
-    # Adding a short delay to ensure camera is fully initialized
-    time.sleep(1)
-    
-    while True:
-        # Capture a frame from the camera
-        ret, frame = cap.read()
         
-        if not ret or frame is None:
-            print("Warning: Failed to capture frame, retrying...")
-            time.sleep(0.1)  # Short delay before retry
-            continue  # Skip this iteration and try again
+        print("\nCamera started successfully!")
+        print("- Press SPACEBAR to capture a frame")
+        print("- Press 'q' to quit")
         
-        # Get the current frame dimensions
-        height, width = frame.shape[:2]
+        frame_count = 0
         
-        # If the frame is very large, resize it for display purposes only
-        display_frame = frame
-        max_display_width = 1024
-        if width > max_display_width:
-            scale_factor = max_display_width / width
-            display_frame = cv2.resize(frame, (int(width * scale_factor), int(height * scale_factor)))
-        
-        # Display live feed (display_frame might be resized for viewing)
-        cv2.imshow("Raspberry Pi Camera", display_frame)
-        
-        # Handle keyboard input
-        key = cv2.waitKey(1) & 0xFF
-        
-        if key == ord('q'):
-            print("Exiting...")
-            break
-        elif key == ord(' '):  # spacebar
-            # Generate a timestamp for the filename
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"frame_{timestamp}_{frame_count}.jpg"
-            filepath = os.path.join(frames_dir, filename)
+        while True:
+            # Capture frame
+            frame = picam2.capture_array()
             
-            # Save the frame at full resolution
-            success = cv2.imwrite(filepath, frame)
-            if success:
-                frame_count += 1
-                print(f"Frame captured: {filename} at {width}x{height}")
-            else:
-                print(f"Error: Failed to save frame to {filepath}")
+            # Convert from RGB to BGR for OpenCV display
+            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            
+            # Display frame
+            cv2.imshow("Raspberry Pi Camera", frame_bgr)
+            
+            # Handle keyboard input
+            key = cv2.waitKey(1) & 0xFF
+            
+            if key == ord('q'):
+                print("Exiting...")
+                break
+            elif key == ord(' '):  # spacebar
+                # Generate a timestamp for the filename
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"frame_{timestamp}_{frame_count}.jpg"
+                filepath = os.path.join(frames_dir, filename)
+                
+                # Save the frame (convert from RGB to BGR for OpenCV imwrite)
+                success = cv2.imwrite(filepath, frame_bgr)
+                if success:
+                    frame_count += 1
+                    print(f"Frame captured: {filename}")
+                else:
+                    print(f"Error: Failed to save frame to {filepath}")
+        
+        # Clean up
+        picam2.close()
+        cv2.destroyAllWindows()
+        print(f"Program ended. {frame_count} frames captured.")
     
-    # Clean up
-    cap.release()
-    cv2.destroyAllWindows()
-    print(f"Program ended. {frame_count} frames captured.")
+    except Exception as e:
+        print(f"Camera error: {e}")
+        print("\nAdditional troubleshooting:")
+        print("1. Make sure you're not running in a virtual environment")
+        print("2. Ensure the camera cable is properly connected")
+        print("3. Check if the camera is enabled in raspi-config")
+        print("4. Try rebooting your Raspberry Pi")
+        print("5. Run 'libcamera-hello' to test if the camera works with libcamera")
+        cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     try:
