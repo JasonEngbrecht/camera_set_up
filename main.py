@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Raspberry Pi Camera Viewer and Frame Capture
+Raspberry Pi Camera Viewer and Frame Capture using OpenCV
 
-This program opens a video stream from a Raspberry Pi camera,
+This program opens a video stream from the Raspberry Pi camera using OpenCV,
 displays it in a window, and allows the user to:
 - Capture frames by pressing the spacebar
 - Exit the program by pressing 'q'
@@ -14,39 +14,42 @@ import cv2
 import time
 import os
 from datetime import datetime
-from picamera2 import Picamera2
 
 def main():
     # Create the frames directory if it doesn't exist
     frames_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frames")
     os.makedirs(frames_dir, exist_ok=True)
     
-    # Initialize the camera
+    # Initialize the camera using OpenCV's VideoCapture
+    # For Raspberry Pi camera, we use the Video4Linux2 (V4L2) interface
+    # The camera is usually device 0
     print("Initializing camera...")
-    picam2 = Picamera2()
+    cap = cv2.VideoCapture(0)
     
-    # Configure the camera
-    # You can adjust these settings based on your requirements
-    config = picam2.create_preview_configuration(main={"format": 'RGB888', "size": (640, 480)})
-    picam2.configure(config)
+    # Check if the camera opened successfully
+    if not cap.isOpened():
+        print("Error: Could not open camera.")
+        return
     
-    # Start the camera
-    picam2.start()
+    # Set camera properties (resolution)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    
     print("Camera started successfully")
-    
-    # Display the video stream and handle keyboard input
     print("Displaying video stream. Press SPACEBAR to capture a frame, 'q' to quit.")
+    
     frame_count = 0
     
     while True:
         # Capture a frame from the camera
-        frame = picam2.capture_array()
+        ret, frame = cap.read()
         
-        # Convert the frame from RGB to BGR for OpenCV
-        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        if not ret:
+            print("Error: Failed to capture frame.")
+            break
         
         # Display live feed
-        cv2.imshow("Raspberry Pi Camera", frame_bgr)
+        cv2.imshow("Raspberry Pi Camera", frame)
         
         # Handle keyboard input
         key = cv2.waitKey(1) & 0xFF
@@ -61,13 +64,13 @@ def main():
             filepath = os.path.join(frames_dir, filename)
             
             # Save the frame
-            cv2.imwrite(filepath, frame_bgr)
+            cv2.imwrite(filepath, frame)
             frame_count += 1
             print(f"Frame captured: {filename}")
     
     # Clean up
+    cap.release()
     cv2.destroyAllWindows()
-    picam2.stop()
     print(f"Program ended. {frame_count} frames captured.")
 
 if __name__ == "__main__":
